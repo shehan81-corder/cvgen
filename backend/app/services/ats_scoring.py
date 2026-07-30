@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#./-]{1,}")
+_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#/-]*(?:\.[a-zA-Z0-9+#/-]+)*")
 
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "if", "then", "else", "for", "to",
@@ -34,9 +34,28 @@ def extract_keywords(text: str) -> set[str]:
     return {_stem(t) for t in tokens if t not in _STOPWORDS and len(t) >= 2}
 
 
+# A perks/benefits section (PTO, office amenities, parental leave, learning
+# budget, etc.) is common in real postings but describes what the employer
+# offers, not what the candidate needs — none of it can legitimately appear
+# in a CV, so counting its words as scoreable keywords just inflates the
+# denominator and drags every score down regardless of actual fit. Cut the
+# job description off at that heading before extracting keywords.
+_BENEFITS_HEADING_RE = re.compile(
+    r"^\s*(job\s+|our\s+|employee\s+)?"
+    r"(benefits?|perks?|what\s+we\s+offer|why\s+join\s+us|"
+    r"compensation(\s+and|\s*&)?\s*benefits)\s*:?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_benefits_section(job_description: str) -> str:
+    match = _BENEFITS_HEADING_RE.search(job_description)
+    return job_description[: match.start()] if match else job_description
+
+
 def match_score(job_description: str, document_text: str) -> float:
     """Percentage of job-description keywords present in document_text."""
-    jd_keywords = extract_keywords(job_description)
+    jd_keywords = extract_keywords(_strip_benefits_section(job_description))
     if not jd_keywords:
         return 0.0
     doc_keywords = extract_keywords(document_text)

@@ -1,4 +1,4 @@
-from app.services.ats_scoring import match_score
+from app.services.ats_scoring import extract_keywords, match_score
 
 
 def test_cv_with_all_jd_keywords_scores_100():
@@ -40,3 +40,44 @@ def test_keyword_in_fixed_style_text_still_counts():
     jd = "Kubernetes"
     job_title_line = "Kubernetes Platform Engineer, Acme Corp"
     assert match_score(jd, job_title_line) == 100.0
+
+
+def test_sentence_final_period_is_not_glued_onto_the_keyword():
+    # The token regex allows "." mid-word (e.g. "Node.js") so a period at
+    # the end of a sentence must not be swept into the token — otherwise
+    # "catalogues." and "catalogues" (in the CV) never match. Compared as
+    # a set-equality against the unpunctuated form rather than asserting an
+    # exact stem, since the stemmer's own suffix-stripping is unrelated to
+    # what this test checks.
+    with_period = extract_keywords("Contribute to product promotions or catalogues.")
+    without_period = extract_keywords("Contribute to product promotions or catalogues")
+    assert with_period == without_period
+
+
+def test_mid_word_period_is_kept_as_part_of_the_keyword():
+    # "Node.js" must stay one token, not split into "node" and "js".
+    keywords = extract_keywords("Experience with Node.js on the backend")
+    assert any(k.startswith("node.j") for k in keywords)
+    assert "node" not in keywords
+
+
+def test_benefits_section_excluded_from_jd_keywords():
+    jd = (
+        "Backend engineer with Kubernetes experience.\n"
+        "Job Benefits\n"
+        "Four weeks annual leave, LinkedIn Learning access, and paid parental leave.\n"
+    )
+    cv = "Backend engineer with Kubernetes experience."
+    assert match_score(jd, cv) == 100.0
+
+
+def test_benefits_section_variants_are_recognised():
+    for heading in ("Benefits", "Perks", "What We Offer", "Compensation & Benefits"):
+        jd = f"Backend engineer with Kubernetes experience.\n{heading}\nFree snacks and a gym membership.\n"
+        assert match_score(jd, "Backend engineer with Kubernetes experience.") == 100.0
+
+
+def test_jd_without_a_benefits_section_is_unaffected():
+    jd = "Python and AWS experience."
+    cv = "I have Python and AWS experience."
+    assert match_score(jd, cv) == 100.0

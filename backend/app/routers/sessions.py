@@ -93,7 +93,7 @@ async def upload_cover_letter(session_id: str, file: UploadFile = File(...)):
         cl_path.unlink(missing_ok=True)
         raise _parse_error("cover letter") from exc
 
-    classified = classify_blocks(blocks)
+    classified = classify_blocks(blocks, document_type="cover_letter")
     save_blocks(session_dir, "cover_letter_blocks.json", classified)
     set_original_filename(session_dir, "cover_letter", file.filename)
 

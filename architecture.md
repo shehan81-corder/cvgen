@@ -99,11 +99,23 @@ generation.
      "Title, Company" or "Degree, Institution" shape (short line,
      title-case, no sentence punctuation) → `fixed` (job titles, company
      names, degree names, institution names).
-3. **Section-based default:**
+3. **Section-based default (`document_type="cv"`):**
    - Inside `experience`, `summary`, `skills`, `projects` → `editable`.
    - Inside `education`, `certifications`, `contact`, or unrecognized
      sections → `fixed` (conservative default: unfamiliar territory is
      left alone rather than risking an edit to something factual).
+
+**Cover letters get a different default (`document_type="cover_letter"`):**
+found via I1's first real-document run — a cover letter has no CV-style
+section headings at all (no "Experience", no "Skills"), so the CV's
+section-based default left the *entire letter* classified `fixed` with
+zero editable blocks. Cover letters instead: still protect contact info
+and dates (rule 2), additionally protect salutation lines ("Dear ...,")
+and sign-offs ("Yours sincerely," + the name line that follows), and
+default everything else to `editable` if it's long enough to be genuine
+body prose (≥6 words) rather than a short letterhead/address/subject-line
+fragment. No section-heading tracking is involved for cover letters at
+all.
 
 **Output:** every block gets `section` + `editable: true|false`. This is
 persisted with the block list — it's what Stage 1 uses to decide what to
@@ -121,9 +133,30 @@ tailored — no error, just missed opportunity. Mitigated by:
   report it.
 - I1 (acceptance pass) explicitly tests against 2–3 real, differently
   formatted CVs, not just one synthetic fixture, to catch classifier gaps
-  before they reach real use.
+  before they reach real use. This is how the cover-letter gap above was
+  actually found and fixed, and how the next limitation was found (not
+  yet fixed):
 - Left as an explicit open item for a future "mark this block as
   editable" manual override (see spec §13's existing open questions).
+
+**Known limitation #2 (found by I1, not fixed — filed as a follow-up):**
+a document whose runs are heavily fragmented mid-sentence (common after
+copy-pasting or heavy in-place editing in Word — e.g. "...I currently
+lead " / "an " / "engineering as Senior Engineering Manager...", where
+the middle run happens to land on a `fixed` pattern) can leave a genuine
+sentence half-`editable`, half-`fixed`. The LLM (correctly, per its
+"preserve structure" instruction) tends to decline editing a fragment
+that would risk breaking grammatical continuity with its frozen
+neighbor — so the block goes untouched, not incorrectly, but
+conservatively to the point of missing real tailoring opportunity. This
+was observed on a real cover letter during I1: 7 blocks were correctly
+classified `editable`, but 2 of the least fragmented ones were the only
+plausible edit targets — the model touched none of them across 5 sample
+calls. Fixing this properly means merging adjacent same-style runs into
+one block *before* extraction/classification (see `docx_blocks.py`), so
+a full sentence is one editable unit instead of an arbitrary Word-run
+split — a `docx_blocks.py`-level change, not a classifier one. Tracked
+as a follow-up task, not patched ad hoc during I1.
 
 ## 5. Stage 1 — LLM rewrite (sparse diff, combined CV + cover letter)
 

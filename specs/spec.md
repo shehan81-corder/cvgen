@@ -139,12 +139,16 @@ The model must be instructed to:
 - Only adjust wording to better reflect terms/skills/priorities from the
   job description where truthfully applicable to the user's actual
   experience — never fabricate skills, experience, or claims not already
-  present in some form in the original CV.
-- Preserve the original sentence structure and logical flow — this is
-  light editing (swap a word/phrase, reorder emphasis within a bullet),
-  not a rewrite.
+  present in some form in the original CV. Rewording may be substantial
+  (not limited to a single word/phrase swap) when the job description
+  genuinely calls for it — e.g. a candidate moving between related roles
+  often needs the same underlying experience described in different
+  terms — as long as every fact, skill, and outcome in the result was
+  already present in some form in the original.
 - Preserve the user's existing tone and vocabulary level — reuse the
-  user's own words wherever possible.
+  user's own words wherever possible, but prioritize genuinely aligning
+  the content with the job description over keeping the original
+  phrasing intact.
 - Never introduce AI/marketing buzzwords ("synergize", "leverage",
   "spearheaded", "results-driven", "dynamic", "cutting-edge", etc.) or
   jargon not already present in the source CV or job description.
@@ -206,7 +210,10 @@ token/latency cost is dominated by the new draft alone, not a full resend
   (e.g. noun phrases, known skill/tool terms, repeated significant terms),
   then compute the fraction of those keywords present in the CV text
   (case-insensitive, simple stemming/lemmatization for matching plural/verb
-  forms).
+  forms). A trailing perks/benefits section in the job description (pay,
+  leave, office amenities, etc.) is excluded before extraction — none of
+  it can legitimately appear in a CV, so counting it would only deflate
+  the score without reflecting fit.
 - Display as a percentage for both the original CV and the tailored CV
   side by side (e.g. "Original: 42% → Tailored: 71%") so the user can see
   the improvement.

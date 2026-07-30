@@ -100,3 +100,28 @@ def build_cv_no_heading_styles(path: Path) -> Path:
 
     document.save(str(path))
     return path
+
+
+def build_cover_letter(path: Path) -> Path:
+    """A cover letter with no CV-style section headings — just letterhead,
+    salutation, body paragraphs, and a sign-off, as real cover letters are
+    structured (found via I1's real-document acceptance run)."""
+    document = Document()
+
+    document.add_paragraph("JOHN SMITH")
+    document.add_paragraph("john.smith@example.com | +1 555-123-4567")
+    document.add_paragraph("Jan 15, 2026")
+
+    document.add_paragraph("Dear Hiring Manager,")
+    document.add_paragraph(
+        "I'm writing to express interest in the Backend Engineer role at your company."
+    )
+    document.add_paragraph(
+        "In my current role I lead a small team building payment infrastructure, "
+        "and I'd welcome the chance to bring that experience to your team."
+    )
+    document.add_paragraph("Yours sincerely,")
+    document.add_paragraph("John Smith")
+
+    document.save(str(path))
+    return path

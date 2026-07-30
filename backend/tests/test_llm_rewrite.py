@@ -4,6 +4,7 @@ from app.services.docx_blocks import Block, BlockLocation, RunStyle
 from app.services.llm_rewrite import (
     BlockEdit,
     InvalidEditIdsError,
+    LLMGenerationError,
     generate_tailored_edits,
 )
 
@@ -129,7 +130,9 @@ def test_cover_letter_invalid_id_raises_with_correct_document_label():
 def test_request_is_a_single_combined_call_with_caching_and_forced_tool_use():
     cv_blocks = [_block("p0-r0", "Led a small team.")]
     cl_blocks = [_block("p5-r0", "I am excited to apply.")]
-    client = FakeClient({"cv_edits": [], "cover_letter_edits": []})
+    client = FakeClient(
+        {"cv_edits": [], "cover_letter_edits": [{"id": "p5-r0", "text": "Updated."}]}
+    )
 
     generate_tailored_edits(
         "JD text", cv_blocks, cover_letter_editable_blocks=cl_blocks, client=client
@@ -159,3 +162,59 @@ def test_low_confidence_false_when_only_cover_letter_has_edits():
     )
 
     assert result.low_confidence is False
+
+
+def test_empty_cover_letter_edits_raises_when_cover_letter_blocks_provided():
+    # Belt-and-suspenders check: the job title/company reference in a cover
+    # letter must always be corrected (SYSTEM_PROMPT), enforced primarily via
+    # the tool schema's minItems — but if the model still returns an empty
+    # array despite cover letter blocks being sent, that's treated as a
+    # retryable failure rather than silently shipping a stale reference.
+    cv_blocks = [_block("p0-r0", "Led a small team.")]
+    cl_blocks = [_block("p5-r0", "I am excited to apply.")]
+    client = FakeClient({"cv_edits": [], "cover_letter_edits": []})
+
+    with pytest.raises(LLMGenerationError):
+        generate_tailored_edits(
+            "JD text", cv_blocks, cover_letter_editable_blocks=cl_blocks, client=client
+        )
+
+
+def test_empty_cover_letter_edits_allowed_when_no_editable_cover_letter_blocks():
+    # A cover letter was uploaded but ended up with zero editable blocks
+    # (e.g. entirely fixed content) — nothing to require an edit against.
+    cv_blocks = [_block("p0-r0", "Led a small team.")]
+    client = FakeClient({"cv_edits": [], "cover_letter_edits": []})
+
+    result = generate_tailored_edits(
+        "JD text", cv_blocks, cover_letter_editable_blocks=[], client=client
+    )
+
+    assert result.cover_letter_edits == []
+
+
+def test_tool_schema_requires_cover_letter_edits_when_cover_letter_blocks_present():
+    cv_blocks = [_block("p0-r0", "Led a small team.")]
+    cl_blocks = [_block("p5-r0", "I am excited to apply.")]
+    client = FakeClient(
+        {"cv_edits": [], "cover_letter_edits": [{"id": "p5-r0", "text": "Updated."}]}
+    )
+
+    generate_tailored_edits(
+        "JD text", cv_blocks, cover_letter_editable_blocks=cl_blocks, client=client
+    )
+
+    schema = client.messages.last_kwargs["tools"][0]["input_schema"]
+    assert "cover_letter_edits" in schema["required"]
+    assert schema["properties"]["cover_letter_edits"]["minItems"] == 1
+
+
+def test_tool_schema_does_not_require_cover_letter_edits_when_no_cover_letter():
+    cv_blocks = [_block("p0-r0", "Led a small team.")]
+    client = FakeClient({"cv_edits": []})
+
+    generate_tailored_edits("JD text", cv_blocks, client=client)
+
+    schema = client.messages.last_kwargs["tools"][0]["input_schema"]
+    assert "cover_letter_edits" not in schema["required"]
+    assert "minItems" not in schema["properties"]["cover_letter_edits"]

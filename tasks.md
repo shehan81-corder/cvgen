@@ -452,3 +452,155 @@ expected (fixes only if gaps are found).
 document set; any failure is filed as a follow-up fix task against the
 specific B/F task it belongs to, not patched ad hoc outside the task
 breakdown.
+
+**I1 findings (2026-07-28):** run against a real CV (225 blocks) + real
+cover letter (30 blocks) + a real job posting, with a real Anthropic API
+key.
+
+- Fixed during I1 (see `architecture.md` §4): a short all-caps
+  comma-separated skills-table value (e.g. "AWS, GCP") was misdetected as
+  an all-caps section marker like "SKILLS", wrongly landing it `fixed`.
+  Root-caused to `classifier.py`'s `_is_heading`; fixed by excluding
+  lines containing a comma from that heuristic. Regression test added.
+- Fixed during I1 (see `architecture.md` §4): cover letters have no
+  CV-style section headings, so `classify_blocks`'s CV-oriented
+  section-based default left the *entire letter* `fixed` — 0 editable
+  blocks out of 30 on the real cover letter. Fixed by adding a
+  `document_type: "cv" | "cover_letter"` parameter with a different
+  default policy for cover letters (protect contact/dates/salutation/
+  sign-off, default everything else editable if long enough to be body
+  prose). Wired through `sessions.py`'s cover-letter upload endpoint.
+  Regression tests added at both the classifier-unit and upload-endpoint
+  levels.
+- Verified clean: no buzzwords (expanded denylist, zero hits across two
+  real generate calls + a retry), light word/phrase-level edits only (no
+  full-sentence rewrites), zero formatting mismatches across all 225 + 30
+  blocks in the downloaded output (including the blocks that were
+  actually edited), correct output filenames, session isolation (two
+  concurrent sessions never shared data), no global state file beyond
+  per-session directories.
+- Verified the caching design directly: 3 consecutive real calls with
+  identical input showed `input_tokens: 34` and
+  `cache_read_input_tokens: 3764` on every call — confirms retries really
+  do cost a small fraction of the first call, as architecture.md §5
+  claims.
+- **Not fixed, filed as a new follow-up (B10 below):** on the real cover
+  letter, the model made zero edits across 5 real sample calls despite 7
+  correctly-classified editable blocks. Root cause: several of those
+  blocks are sentence fragments split mid-word by Word's internal run
+  boundaries, with a `fixed` block sitting in the middle (e.g. "...I
+  currently lead " / "an " / "engineering as Senior Engineering
+  Manager..."). The model appears to correctly decline editing a fragment
+  that risks breaking continuity with its frozen neighbor — sensible
+  given its "preserve structure" instruction, but it means genuinely
+  fragmented documents may see little to no cover-letter tailoring in
+  practice.
+
+---
+
+## B10 — Merge adjacent same-style runs before extraction (follow-up from I1)
+
+**Spec refs:** architecture.md §4 "Known limitation #2"
+
+**Scope:** Backend, `app/services/docx_blocks.py`. Pure refactor of block
+extraction — no change to the classifier, LLM service, or writer's
+contracts (they all consume `Block` objects however extraction produces
+them).
+
+- When adjacent runs within the same paragraph (or table cell) share
+  identical formatting (font, size, color, bold, italic, underline) *and*
+  neither run boundary falls on a sentence break, merge them into a
+  single `Block` before classification. This makes a full sentence one
+  editable unit instead of an arbitrary Word-internal run split, so the
+  LLM is never asked to edit half a sentence while its other half is
+  frozen.
+- Must not merge across a genuine formatting change (e.g. a bolded word
+  mid-sentence stays its own run/block — merging would lose the ability
+  to preserve that formatting on write-back).
+- Location metadata (`BlockLocation`) needs to still resolve back to the
+  *set* of original runs a merged block covers, since the docx writer
+  (`docx_writer.py`) writes text back per-run — merging blocks for
+  classification purposes doesn't remove the need to write the final
+  edited text back across the original run boundaries (likely: write the
+  full new text into the first run of the merged group, clear the text of
+  the others, since a merged edit may not map 1:1 back onto the original
+  run split anyway).
+
+**Depends on:** B2 (extends it directly).
+
+**Verify:**
+- Regression test using a fixture that reproduces the real failure found
+  in I1: a sentence deliberately split across 3 runs where the middle run
+  is a `fixed`-triggering fragment (e.g. contains a date-like token or is
+  isolated by formatting) — confirm the whole sentence now extracts as
+  one block, or at least that the previously-isolated middle fragment no
+  longer blocks editing of the sentence around it.
+- Re-run I1's real cover letter through the fixed pipeline and confirm
+  at least one real edit now lands on a previously-untouched fragment
+  (can't guarantee the model *will* edit it — that's still its judgment
+  call — but it must no longer be structurally prevented from doing so).
+- Full existing test suite (62+ tests as of I1) still passes — this must
+  not change extraction behavior for any document without fragmented
+  runs.
+
+**Status: done**, implemented as designed (`docx_blocks._group_runs`,
+`BlockLocation.run_indices`, `docx_writer._get_runs` writing the edit into
+the group's first run and clearing the rest). Found live, not from a
+synthetic fixture: a real user's CV/cover-letter test run surfaced this
+plus two more classifier bugs at the same time, all fixed together —
+recorded below since they landed outside the planned B-series.
+
+---
+
+## Post-I1 fixes — real-CV tailoring failure (found via live user testing)
+
+Not a planned task — a user ran their own CV + cover letter + JD through
+the shipped I1 pipeline and got back a CV with only 1 line changed.
+Investigating why surfaced three compounding bugs, fixed together:
+
+- **Classifier false-positive heading detection** (`classifier.py`,
+  `_is_heading`): a standalone all-caps run mid-paragraph (an inline
+  acronym like "GCP", or a fragment like the lone "S" left when
+  "TypeScript" gets run-split) was indistinguishable from a real section
+  heading like "SKILLS". Each false match silently reset section-tracking
+  to `unknown`, freezing everything after it as `fixed` until the next
+  real heading — on the real CV this excluded ~90 of ~130 experience/
+  skills blocks from tailoring. Fixed by gating heading-candidacy on the
+  run being the first non-lowercase content in its paragraph (tracked via
+  a `paragraph_leading` flag in `classify_blocks`) — a real heading is
+  always paragraph-initial; an inline acronym mid-bullet never is.
+- **Missing section alias:** "CAREER HIGHLIGHTS" (a common achievements-
+  section heading) wasn't in `SECTION_ALIASES`, so the conservative
+  unrecognized-section default (architecture.md §4.3) classified the
+  entire section `fixed` — on the real CV this excluded exactly the
+  achievement bullets most worth tailoring for a role change. Added as a
+  new `highlights` section (aliases: "career highlights", "key
+  achievements", "achievements", "highlights"), included in
+  `EDITABLE_SECTIONS`.
+- **B10 implemented** (run-merging, see above) — the real document's runs
+  were fragmented badly enough (single words, sometimes single letters)
+  that even after the classifier fixes, most newly-`editable` content was
+  still too fragmented for the model to confidently edit.
+
+Combined effect on the real CV: editable blocks went from 36/225 (16%) to
+92/137 (67%) after merging; actual model edits went from 2 to 11 on the
+CV and 0 to 3 on the cover letter; ATS score moved from flat (26.7% →
+26.7%) to a real improvement (30.1% → 33.7%).
+
+Regression tests added: `classifier.py`'s `paragraph_leading` gate and
+the new `highlights` section are covered in `test_classifier.py`; B10's
+run-merging is covered per its own Verify section above.
+
+**Also fixed in the same pass, `ats_scoring.py`** (unrelated to the
+tailoring bug above, found while explaining a low ATS score to the user):
+- `_TOKEN_RE` glued a sentence-ending period onto the last word of a
+  sentence (`"catalogues."` as one token), so it could never match the
+  same word elsewhere. Fixed to only keep a `.` inside a token when
+  something follows it (`"Node.js"` still tokenizes correctly).
+- A job description's perks/benefits section (leave, office amenities,
+  learning budgets, etc.) was counted toward the keyword denominator even
+  though none of it can legitimately appear in a CV, mechanically
+  deflating every score. `_strip_benefits_section` now cuts the job
+  description off at a `Benefits`/`Perks`/`What We Offer`/`Compensation &
+  Benefits` heading before extraction. Regression tests in
+  `test_ats_scoring.py`.

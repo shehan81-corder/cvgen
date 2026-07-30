@@ -1,4 +1,6 @@
-from tests.docx_fixtures import build_simple_cv
+import json
+
+from tests.docx_fixtures import build_cover_letter, build_simple_cv
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -91,6 +93,29 @@ def test_cover_letter_upload_attaches_to_existing_session(client, data_dir, tmp_
     session_dir = data_dir / f"session-{session_id}"
     assert (session_dir / "cover_letter.docx").exists()
     assert (session_dir / "cover_letter_blocks.json").exists()
+
+
+def test_cover_letter_upload_classifies_as_cover_letter_not_cv(client, data_dir, tmp_path):
+    """Integration-level regression test: the upload endpoint must pass
+    document_type="cover_letter" through to the classifier, not just the
+    unit-level classifier tests. A real cover letter has no CV-style section
+    headings, so classifying it as a CV would leave it entirely fixed."""
+    cv_response = client.post(
+        "/sessions/cv",
+        files={"file": ("my_cv.docx", _cv_bytes(tmp_path), DOCX_CONTENT_TYPE)},
+    )
+    session_id = cv_response.json()["session_id"]
+
+    cl_path = build_cover_letter(tmp_path / "cover_letter.docx")
+    client.post(
+        f"/sessions/{session_id}/cover-letter",
+        files={"file": ("cover_letter.docx", cl_path.read_bytes(), DOCX_CONTENT_TYPE)},
+    )
+
+    session_dir = data_dir / f"session-{session_id}"
+    blocks = json.loads((session_dir / "cover_letter_blocks.json").read_text())
+    editable_texts = [b["text"] for b in blocks if b["editable"]]
+    assert any("writing to express interest" in t for t in editable_texts)
 
 
 def test_cover_letter_upload_to_missing_session_404(client, tmp_path):

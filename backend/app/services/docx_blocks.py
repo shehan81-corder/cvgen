@@ -19,6 +19,12 @@ class BlockLocation(BaseModel):
     kind: Literal["paragraph", "table_cell"]
     paragraph_index: int
     run_index: int
+    # All original run indices this block covers, in order. A block usually
+    # merges 2+ adjacent same-style runs that Word split mid-word/mid-phrase
+    # (see _paragraph_blocks) — run_index is just run_indices[0], kept for
+    # id stability. Empty on blocks persisted before this field existed;
+    # treat that as [run_index] (see docx_writer._get_runs).
+    run_indices: list[int] = []
     table_index: int | None = None
     row_index: int | None = None
     cell_index: int | None = None
@@ -66,6 +72,43 @@ def _run_style(run: Run) -> RunStyle:
     )
 
 
+_SENTENCE_END_CHARS = (".", "!", "?")
+
+
+def _group_runs(paragraph: Paragraph) -> list[list[int]]:
+    """Group adjacent non-empty runs that share identical formatting into
+    one block, unless the earlier run ends a sentence.
+
+    Word commonly splits a single word or sentence across multiple runs —
+    from copy-paste, spell-check, or in-place editing (e.g. "TypeScript"
+    saved as "Type" + "S" + "cript" runs, all identically styled). Left
+    unmerged, each fragment becomes its own block, and the LLM (correctly,
+    per its "preserve structure" instruction) tends to decline editing a
+    fragment that would break continuity with a frozen neighbor — so real
+    content silently never gets tailored. Merging same-style runs that
+    don't cross a sentence boundary turns these back into one editable
+    unit, without blurring two genuinely separate sentences (or a run with
+    different formatting, e.g. a bolded label) into one block. See
+    architecture.md §4 "Known limitation #2" / tasks.md B10.
+    """
+    groups: list[list[int]] = []
+    group_style: RunStyle | None = None
+    prev_ends_sentence = True  # forces a new group to start on the first run
+
+    for run_index, run in enumerate(paragraph.runs):
+        if not run.text:
+            continue
+        style = _run_style(run)
+        if groups and style == group_style and not prev_ends_sentence:
+            groups[-1].append(run_index)
+        else:
+            groups.append([run_index])
+        group_style = style
+        prev_ends_sentence = run.text.rstrip().endswith(_SENTENCE_END_CHARS)
+
+    return groups
+
+
 def _paragraph_blocks(
     paragraph: Paragraph,
     paragraph_index: int,
@@ -78,29 +121,30 @@ def _paragraph_blocks(
     kind: Literal["paragraph", "table_cell"] = "paragraph" if table_index is None else "table_cell"
 
     blocks: list[Block] = []
-    for run_index, run in enumerate(paragraph.runs):
-        if not run.text:
-            continue
+    for group in _group_runs(paragraph):
+        first_index = group[0]
+        text = "".join(paragraph.runs[i].text for i in group)
 
         if table_index is None:
-            block_id = f"p{paragraph_index}-r{run_index}"
+            block_id = f"p{paragraph_index}-r{first_index}"
         else:
-            block_id = f"t{table_index}-row{row_index}-c{cell_index}-p{paragraph_index}-r{run_index}"
+            block_id = f"t{table_index}-row{row_index}-c{cell_index}-p{paragraph_index}-r{first_index}"
 
         blocks.append(
             Block(
                 id=block_id,
-                text=run.text,
+                text=text,
                 style_name=style_name,
                 location=BlockLocation(
                     kind=kind,
                     paragraph_index=paragraph_index,
-                    run_index=run_index,
+                    run_index=first_index,
+                    run_indices=group,
                     table_index=table_index,
                     row_index=row_index,
                     cell_index=cell_index,
                 ),
-                run_style=_run_style(run),
+                run_style=_run_style(paragraph.runs[first_index]),
             )
         )
     return blocks
